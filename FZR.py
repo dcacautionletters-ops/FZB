@@ -95,7 +95,7 @@ if uploaded_file:
     
     if st.button("Generate Reports"):
         output = io.BytesIO()
-        sheets_created = 0 # TRACKER TO PREVENT THE ERROR
+        sheets_created = 0 # TRACKER TO PREVENT THE CRASH
         
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df['Dept'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
@@ -117,12 +117,13 @@ if uploaded_file:
                 
                 for series in sorted(list(series_list)):
                     s_parts = series.split()
+                    # Filtering rows based on the defined series
                     s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(s_parts[0]) & 
                                 d_df[c_map['batch']].astype(str).str.contains(s_parts[-1])]
                     
                     subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
-                    # 1. GEN
+                    # 1. Shortage Report (GEN)
                     gen_data = process_grid(s_df, c_map, subs, threshold, False)
                     if gen_data is not None:
                         sn = f"{series} GEN"[:31]
@@ -130,17 +131,18 @@ if uploaded_file:
                         get_bracket_summary(s_df, c_map, subs).to_excel(writer, sheet_name=sn, startrow=len(gen_data)+2, index=False)
                         sheets_created += 1
 
-                    # 2. GEN ALL
+                    # 2. Full Report (GEN ALL)
                     all_data = process_grid(s_df, c_map, subs, threshold, True)
                     if all_data is not None:
                         sn_all = f"{series} GEN ALL"[:31]
                         all_data.to_excel(writer, sheet_name=sn_all, index=False)
-                        get_bracket_summary(s_df, c_map, subs).to_excel(writer, sheet_name=sn_all, startrow=len(all_at if 'all_at' in locals() else all_data)+2, index=False)
+                        get_bracket_summary(s_df, c_map, subs).to_excel(writer, sheet_name=sn_all, startrow=len(all_data)+2, index=False)
                         sheets_created += 1
             
-            # THE FIX: If no sheets were made, create a blank one so openpyxl doesn't crash
+            # --- THE FIX ---
             if sheets_created == 0:
-                pd.DataFrame({"Message": ["No data matched your filtering criteria."]}).to_excel(writer, sheet_name="No Data Found")
+                # If no data was found for the series naming logic, create a dummy sheet to avoid Index Error
+                pd.DataFrame({"Warning": ["No batches found matching the naming criteria (BCA/MCA/MBA BU/MCOM FA)."]}).to_excel(writer, sheet_name="No Data Matches")
 
         st.success("Report Ready!")
         st.download_button("Download Excel", output.getvalue(), "VMS_Plain_Reports.xlsx")
