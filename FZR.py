@@ -1,34 +1,152 @@
-IndexError: This app has encountered an error. The original error message is redacted to prevent data leaks. Full error details have been recorded in the logs (if you're on Streamlit Cloud, click on 'Manage app' in the lower right of your app).
-Traceback:
+import streamlit as st
+import pandas as pd
+import io
 
-File "/mount/src/fzb/FZR.py", line 99, in <module>
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-         ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
-File "/home/adminuser/venv/lib/python3.14/site-packages/pandas/io/excel/_base.py", line 1353, in __exit__
-    self.close()
-    ~~~~~~~~~~^^
-File "/home/adminuser/venv/lib/python3.14/site-packages/pandas/io/excel/_base.py", line 1357, in close
-    self._save()
-    ~~~~~~~~~~^^
-File "/home/adminuser/venv/lib/python3.14/site-packages/pandas/io/excel/_openpyxl.py", line 110, in _save
-    self.book.save(self._handles.handle)
-    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
-File "/home/adminuser/venv/lib/python3.14/site-packages/openpyxl/workbook/workbook.py", line 386, in save
-    save_workbook(self, filename)
-    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
-File "/home/adminuser/venv/lib/python3.14/site-packages/openpyxl/writer/excel.py", line 294, in save_workbook
-    writer.save()
-    ~~~~~~~~~~~^^
-File "/home/adminuser/venv/lib/python3.14/site-packages/openpyxl/writer/excel.py", line 275, in save
-    self.write_data()
-    ~~~~~~~~~~~~~~~^^
-File "/home/adminuser/venv/lib/python3.14/site-packages/openpyxl/writer/excel.py", line 89, in write_data
-    archive.writestr(ARC_WORKBOOK, writer.write())
-                                   ~~~~~~~~~~~~^^
-File "/home/adminuser/venv/lib/python3.14/site-packages/openpyxl/workbook/_writer.py", line 150, in write
-    self.write_views()
-    ~~~~~~~~~~~~~~~~^^
-File "/home/adminuser/venv/lib/python3.14/site-packages/openpyxl/workbook/_writer.py", line 137, in write_views
-    active = get_active_sheet(self.wb)
-File "/home/adminuser/venv/lib/python3.14/site-packages/openpyxl/workbook/_writer.py", line 35, in get_active_sheet
-    raise IndexError("At least one sheet must be visible")
+# --- 1. BASIC UI ---
+st.set_page_config(page_title="VMS Report Generator", layout="centered")
+MASTER_PASSWORD = "VMS@123"
+
+st.title("📊 VMS Report Generator")
+
+# --- 2. AUTHENTICATION ---
+if 'auth' not in st.session_state: st.session_state.auth = False
+if not st.session_state.auth:
+    p = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if p == MASTER_PASSWORD: 
+            st.session_state.auth = True
+            st.rerun()
+        else: st.error("Incorrect password")
+    st.stop()
+
+# --- 3. HELPER FUNCTIONS ---
+KEYWORDS_TO_IGNORE = ["BADMINTON", "BASKETBALL", "CROSS FITNESS", "SWIMMING", "ZUMBA", "TABLE TENNIS", 
+                      "FREESLOT", "FREE SLOT", "SOFT SKILL", "ATOM", "DSA"]
+ATT_COL_NAME = "Attended Hours with Approved Leave Percentage"
+
+def is_valid_subject(subject_name):
+    s_upper = str(subject_name).upper()
+    return not any(bad in s_upper for bad in KEYWORDS_TO_IGNORE)
+
+def get_bracket_summary(data_df, cols, subjects):
+    summary_data = []
+    for sub in subjects:
+        sub_vals = pd.to_numeric(data_df[data_df[cols['subject']] == sub][cols['attendance']], errors='coerce').dropna()
+        b1 = len(sub_vals[(sub_vals >= 0) & (sub_vals < 50)])
+        b2 = len(sub_vals[(sub_vals >= 50) & (sub_vals < 60)])
+        b3 = len(sub_vals[(sub_vals >= 60) & (sub_vals < 70)])
+        b4 = len(sub_vals[(sub_vals >= 70) & (sub_vals < 75)])
+        summary_data.append({
+            "Subject": sub, "0.00-49.99": b1, "50.00-59.99": b2, 
+            "60.00-69.99": b3, "70.00-74.99": b4, "Total": b1+b2+b3+b4
+        })
+    return pd.DataFrame(summary_data)
+
+def process_grid(data_df, cols, batch_subjects, threshold, show_all=False):
+    if data_df.empty: return None
+    df_local = data_df.copy()
+    df_local[cols['attendance']] = pd.to_numeric(df_local[cols['attendance']], errors='coerce')
+    
+    grid = df_local.pivot_table(index=[cols['roll'], cols['name'], cols['batch'], cols['sem']],
+                                columns=cols['subject'], values=cols['attendance'], sort=False).reset_index()
+    
+    subs = [s for s in batch_subjects if is_valid_subject(s)]
+    for s in subs:
+        if s not in grid.columns: grid[s] = None
+        grid[s] = pd.to_numeric(grid[s], errors='coerce')
+
+    theory = [c for c in subs if not any(x in str(c).upper() for x in ["LAB", "PRACTICAL", "WORKSHOP"])]
+    grid['Theory Avg'] = grid[theory].mean(axis=1).round(2)
+    grid['Final Avg'] = grid[subs].mean(axis=1).round(2)
+    
+    if not show_all:
+        mask = (grid[subs] < threshold).any(axis=1)
+        grid = grid[mask].copy()
+        if grid.empty: return None
+        for s in subs:
+            grid[s] = grid[s].apply(lambda x: x if (pd.notnull(x) and x < threshold) else "")
+
+    grid.insert(0, 'Sl No.', range(1, len(grid) + 1))
+    return grid
+
+# --- 4. DATA PROCESSING ---
+uploaded_file = st.file_uploader("Choose Excel File", type=["xlsx"])
+
+if uploaded_file:
+    df_raw = pd.read_excel(uploaded_file)
+    h_row = 0
+    for i, row in df_raw.head(15).iterrows():
+        if any("ROLL NO" in str(x).upper() for x in row.values):
+            h_row = i
+            break
+    df = pd.read_excel(uploaded_file, header=h_row)
+    
+    c_map = {'sem': df.columns[5]}
+    for c in df.columns:
+        cs = str(c).strip()
+        if "Roll No" in cs: c_map['roll'] = c
+        elif "Student Name" in cs: c_map['name'] = c
+        elif "Batch" in cs: c_map['batch'] = c
+        elif any(x in cs for x in ["Course", "Subject"]): c_map['subject'] = c
+        elif ATT_COL_NAME in cs: c_map['attendance'] = c
+
+    threshold = st.number_input("Shortage Threshold (%)", 50, 100, 75)
+    
+    if st.button("Generate Reports", use_container_width=True):
+        output = io.BytesIO()
+        
+        # WE OPEN THE WRITER HERE
+        writer = pd.ExcelWriter(output, engine='openpyxl')
+        
+        # --- THE ULTIMATE FIX: Create a sheet IMMEDIATELY ---
+        # This ensures the file is NEVER empty, even if the loops find nothing.
+        pd.DataFrame({"Status": ["Processing Completed"]}).to_excel(writer, sheet_name="Main_Summary", index=False)
+
+        try:
+            df['Dept'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
+            
+            for dept in sorted(df['Dept'].unique()):
+                d_df = df[df['Dept'] == dept]
+                unique_batches = d_df[c_map['batch']].astype(str).unique()
+                series_list = set()
+                
+                for b in unique_batches:
+                    b_parts = b.split()
+                    b_upper = b.upper()
+                    if "BCA" in b_upper or "MCA" in b_upper:
+                        year = next((p for p in b_parts if p.isdigit()), "Series")
+                        series_list.add(f"{b_parts[0].upper()} {year}")
+                    elif "MBA" in b_upper or "MCOM" in b_upper:
+                        series_list.add(' '.join(b_parts[:3]))
+                    else:
+                        series_list.add(' '.join(b_parts[:2]))
+                
+                for series in sorted(list(series_list)):
+                    s_parts = series.split()
+                    s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(s_parts[0], case=False) & 
+                                d_df[c_map['batch']].astype(str).str.contains(s_parts[-1], case=False)]
+                    
+                    subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
+                    
+                    # GEN Report
+                    gen_data = process_grid(s_df, c_map, subs, threshold, False)
+                    if gen_data is not None:
+                        sn = f"{series} GEN"[:31]
+                        gen_data.to_excel(writer, sheet_name=sn, index=False)
+                        get_bracket_summary(s_df, c_map, subs).to_excel(writer, sheet_name=sn, startrow=len(gen_data)+2, index=False)
+
+                    # GEN ALL Report
+                    all_data = process_grid(s_df, c_map, subs, threshold, True)
+                    if all_data is not None:
+                        sn_all = f"{series} GEN ALL"[:31]
+                        all_data.to_excel(writer, sheet_name=sn_all, index=False)
+                        get_bracket_summary(s_df, c_map, subs).to_excel(writer, sheet_name=sn_all, startrow=len(all_data)+2, index=False)
+        
+        except Exception as e:
+            st.error(f"Error during processing: {e}")
+        
+        # CLOSE AND SAVE
+        writer.close()
+        
+        st.success("Report Generated!")
+        st.download_button("📥 Download Excel Report", output.getvalue(), "VMS_Final_Report.xlsx", use_container_width=True)
