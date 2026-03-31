@@ -64,7 +64,6 @@ def process_grid(data_df, cols, batch_subjects, threshold, show_all=False):
         mask = (grid[subs] < threshold).any(axis=1)
         grid = grid[mask].copy()
         if grid.empty: return None
-        # Mask values that are above threshold for the Shortage Report
         for s in subs:
             grid[s] = grid[s].apply(lambda x: x if (pd.notnull(x) and x < threshold) else "")
 
@@ -75,7 +74,6 @@ def process_grid(data_df, cols, batch_subjects, threshold, show_all=False):
 uploaded_file = st.file_uploader("Choose Excel File", type=["xlsx"])
 
 if uploaded_file:
-    # Initial read to find header row
     df_raw = pd.read_excel(uploaded_file)
     h_row = 0
     for i, row in df_raw.head(15).iterrows():
@@ -84,7 +82,6 @@ if uploaded_file:
             break
     df = pd.read_excel(uploaded_file, header=h_row)
     
-    # Map essential columns
     c_map = {'sem': df.columns[5]}
     for c in df.columns:
         cs = str(c).strip()
@@ -98,9 +95,9 @@ if uploaded_file:
     
     if st.button("Generate Reports"):
         output = io.BytesIO()
+        sheets_created = 0 # TRACKER TO PREVENT INDEXERROR
+        
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            
-            # Identify Departments
             df['Dept'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
             
             for dept in sorted(df['Dept'].unique()):
@@ -108,38 +105,42 @@ if uploaded_file:
                 unique_batches = d_df[c_map['batch']].astype(str).unique()
                 series_list = set()
                 
-                # Grouping Logic for BCA, MCA, MBA BU, MCOM FA
                 for b in unique_batches:
                     b_parts = b.split()
                     if "BCA" in b.upper() or "MCA" in b.upper():
                         year = next((p for p in b_parts if p.isdigit()), "Series")
                         series_list.add(f"{b_parts[0].upper()} {year}")
                     elif "MBA" in b.upper() or "MCOM" in b.upper():
-                        series_list.add(' '.join(b_parts[:3])) # MBA BU 2025
+                        series_list.add(' '.join(b_parts[:3]))
                     else:
                         series_list.add(' '.join(b_parts[:2]))
                 
                 for series in sorted(list(series_list)):
-                    # Extract year and prefix for filtering
                     s_parts = series.split()
                     s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(s_parts[0]) & 
                                 d_df[c_map['batch']].astype(str).str.contains(s_parts[-1])]
                     
                     subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
-                    # 1. Shortage Sheet (GEN)
+                    # 1. GEN
                     gen_data = process_grid(s_df, c_map, subs, threshold, False)
                     if gen_data is not None:
-                        sheet_name = f"{series} GEN"[:31]
-                        gen_data.to_excel(writer, sheet_name=sheet_name, index=False)
-                        get_bracket_summary(s_df, c_map, subs).to_excel(writer, sheet_name=sheet_name, startrow=len(gen_data)+2, index=False)
+                        sn = f"{series} GEN"[:31]
+                        gen_data.to_excel(writer, sheet_name=sn, index=False)
+                        get_bracket_summary(s_df, c_map, subs).to_excel(writer, sheet_name=sn, startrow=len(gen_data)+2, index=False)
+                        sheets_created += 1
 
-                    # 2. Full Sheet (GEN ALL)
+                    # 2. GEN ALL
                     all_data = process_grid(s_df, c_map, subs, threshold, True)
                     if all_data is not None:
-                        sheet_name_all = f"{series} GEN ALL"[:31]
-                        all_data.to_excel(writer, sheet_name=sheet_name_all, index=False)
-                        get_bracket_summary(s_df, c_map, subs).to_excel(writer, sheet_name=sheet_name_all, startrow=len(all_data)+2, index=False)
+                        sn_all = f"{series} GEN ALL"[:31]
+                        all_data.to_excel(writer, sheet_name=sn_all, index=False)
+                        get_bracket_summary(s_df, c_map, subs).to_excel(writer, sheet_name=sn_all, startrow=len(all_data)+2, index=False)
+                        sheets_created += 1
+            
+            # CRITICAL FIX: If no sheets were created, add a placeholder to prevent the crash
+            if sheets_created == 0:
+                pd.DataFrame({"Message": ["No data matched the filtering criteria."]}).to_excel(writer, sheet_name="No Data Found")
 
         st.success("Report Ready!")
         st.download_button("Download Excel", output.getvalue(), "VMS_Plain_Reports.xlsx")
