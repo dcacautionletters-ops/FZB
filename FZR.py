@@ -14,89 +14,79 @@ if not st.session_state.auth:
     st.stop()
 
 # --- 2. THE GENERATOR ---
-st.title("📊 VMS Alpha-Numeric Report Generator")
-st.info("Scanner Active: Detecting headers from Row 3, Column B...")
+st.title("📊 VMS Report Generator")
+st.info("Direct Mode: Identifying data starting from Column B...")
 
 uploaded_file = st.file_uploader("Upload Universal Attendance Excel", type=["xlsx"])
 
 if uploaded_file:
-    # Step 1: Read raw data (no types assumed yet)
-    df_raw = pd.read_excel(uploaded_file, header=None)
-    
-    start_row = None
-    start_col = None
-    
-    # Step 2: Scan for the "Roll No" anchor
-    for r_idx, row in df_raw.iterrows():
-        for c_idx, value in enumerate(row):
-            if str(value).strip().upper() == "ROLL NO":
-                start_row = r_idx
-                start_col = c_idx
+    try:
+        # Load the whole sheet, starting from Column B (index 1)
+        # 'usecols' tells pandas to ignore Column A entirely
+        df_raw = pd.read_excel(uploaded_file, header=None, usecols="B:Z")
+        
+        # FIND THE HEADER: Look for "Roll No" in Column B
+        start_row_idx = None
+        for i, val in enumerate(df_raw.iloc[:, 0]): # Check Column B (now index 0)
+            if str(val).strip().upper() == "ROLL NO":
+                start_row_idx = i
                 break
-        if start_row is not None: break
-            
-    if start_row is None:
-        st.error("❌ Could not find 'Roll No'. Please check Row 3, Column B.")
-        st.dataframe(df_raw.head(10)) 
-    else:
-        # Step 3: Slice the data from the anchor point
-        df_sliced = df_raw.iloc[start_row:].copy()
-        df_sliced = df_sliced.iloc[:, start_col:]
         
-        # Set headers and drop the header row from data
-        df_sliced.columns = df_sliced.iloc[0]
-        df = df_sliced[1:].reset_index(drop=True)
-        
-        # Clean column names
-        df.columns = [str(c).strip() for c in df.columns]
-        
-        # Define exact column keys
-        COL_ROLL = "Roll No"
-        COL_NAME = "Student Name"
-        COL_BATCH = "Batch"
-        COL_SUB = "Subject Name"
-        COL_ATT = "Attended Hours with Approved Leave Percentage"
-
-        if COL_ROLL not in df.columns:
-            st.error(f"❌ Found anchor, but column '{COL_ROLL}' is missing. Check spelling.")
+        if start_row_idx is None:
+            st.error("❌ Could not find 'Roll No' in Column B. Check your headers.")
+            st.dataframe(df_raw.head(10)) # Show preview
         else:
-            # --- CRITICAL FIX FOR ALPHA-NUMERIC ---
-            # Force Roll No and Batch to be strings to prevent data loss
-            df[COL_ROLL] = df[COL_ROLL].astype(str).str.strip()
-            df[COL_BATCH] = df[COL_BATCH].astype(str).str.strip()
+            # Slice the data: Headers are at start_row_idx, Data is below it
+            df = df_raw.iloc[start_row_idx:].copy()
+            df.columns = df.iloc[0] # Set the row with "Roll No" as header
+            df = df[1:].reset_index(drop=True) # Remove the header row from data
             
-            st.success(f"✅ Table recognized at Row {start_row + 1}!")
+            # Clean Column Names
+            df.columns = [str(c).strip() for c in df.columns]
+            
+            # Exact Column Names to map
+            COL_ROLL = "Roll No"
+            COL_NAME = "Student Name"
+            COL_BATCH = "Batch"
+            COL_SUB = "Subject Name"
+            COL_ATT = "Attended Hours with Approved Leave Percentage"
 
-            if st.button("Generate Reports"):
-                output = io.BytesIO()
-                writer = pd.ExcelWriter(output, engine='openpyxl')
-                
-                # Summary Sheet
-                pd.DataFrame({"Status": ["Alpha-Numeric Processing Complete"]}).to_excel(writer, sheet_name="Summary", index=False)
-                
-                # Unique batches
-                batches = df[COL_BATCH].unique()
-                
-                for b in batches:
-                    if pd.isna(b) or str(b).lower() == 'nan': continue
+            # Force Alphanumeric Roll Nos to String
+            df[COL_ROLL] = df[COL_ROLL].astype(str).str.strip()
+
+            if COL_ROLL not in df.columns:
+                st.error(f"Missing column: {COL_ROLL}")
+            else:
+                st.success(f"✅ Table found! First Roll No detected: {df[COL_ROLL].iloc[0]}")
+
+                if st.button("Generate Plain Reports"):
+                    output = io.BytesIO()
+                    writer = pd.ExcelWriter(output, engine='openpyxl')
                     
-                    b_df = df[df[COL_BATCH] == b].copy()
+                    # Safety Summary Sheet
+                    pd.DataFrame({"Status": ["Processed"]}).to_excel(writer, sheet_name="Summary", index=False)
                     
-                    # Ensure attendance is treated as a number for the pivot
-                    b_df[COL_ATT] = pd.to_numeric(b_df[COL_ATT], errors='coerce')
+                    # Grouping by Batch
+                    for b in df[COL_BATCH].dropna().unique():
+                        b_df = df[df[COL_BATCH] == b].copy()
+                        
+                        # Convert attendance percentage to number
+                        b_df[COL_ATT] = pd.to_numeric(b_df[COL_ATT], errors='coerce')
+                        
+                        # Create the Pivot Grid
+                        grid = b_df.pivot_table(
+                            index=[COL_ROLL, COL_NAME],
+                            columns=COL_SUB,
+                            values=COL_ATT,
+                            aggfunc='first'
+                        ).reset_index()
+                        
+                        # Clean batch name for Excel sheet tab
+                        sheet_name = str(b)[:30].replace("/", "-").replace("\\", "-")
+                        grid.to_excel(writer, sheet_name=sheet_name, index=False)
                     
-                    # Create the Grid
-                    # Using 'first' ensures alpha-numeric Roll Nos aren't summed or averaged
-                    grid = b_df.pivot_table(
-                        index=[COL_ROLL, COL_NAME],
-                        columns=COL_SUB,
-                        values=COL_ATT,
-                        aggfunc='first'
-                    ).reset_index()
+                    writer.close()
+                    st.download_button("📥 Download Report", output.getvalue(), "VMS_Final_Report.xlsx")
                     
-                    # Format Sheet Name
-                    sheet_name = str(b)[:30].replace("/", "-").replace("\\", "-")
-                    grid.to_excel(writer, sheet_name=sheet_name, index=False)
-                
-                writer.close()
-                st.download_button("📥 Download Excel Report", output.getvalue(), "VMS_Formatted_Report.xlsx")
+    except Exception as e:
+        st.error(f"Critical Error: {e}")
