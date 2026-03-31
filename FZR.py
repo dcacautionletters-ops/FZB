@@ -2,14 +2,14 @@ import streamlit as st
 import pandas as pd
 import io
 
-# --- 1. MINIMAL UI ---
+# --- 1. MINIMAL UI CONFIGURATION ---
 st.set_page_config(page_title="VMS Report Generator", layout="centered")
 MASTER_PASSWORD = "VMS@123"
 
-st.title("VMS Report Generator")
+st.title("📊 VMS Report Generator")
 st.write("Upload a file to generate plain Excel reports.")
 
-# --- 2. SIMPLE AUTHENTICATION ---
+# --- 2. AUTHENTICATION ---
 if 'auth' not in st.session_state: st.session_state.auth = False
 if not st.session_state.auth:
     p = st.text_input("Password", type="password")
@@ -17,7 +17,8 @@ if not st.session_state.auth:
         if p == MASTER_PASSWORD: 
             st.session_state.auth = True
             st.rerun()
-        else: st.error("Incorrect password")
+        else: 
+            st.error("Incorrect password")
     st.stop()
 
 # --- 3. HELPER FUNCTIONS ---
@@ -70,10 +71,11 @@ def process_grid(data_df, cols, batch_subjects, threshold, show_all=False):
     grid.insert(0, 'Sl No.', range(1, len(grid) + 1))
     return grid
 
-# --- 4. EXECUTION ---
+# --- 4. DATA PROCESSING & EXECUTION ---
 uploaded_file = st.file_uploader("Choose Excel File", type=["xlsx"])
 
 if uploaded_file:
+    # Read file to find header row automatically
     df_raw = pd.read_excel(uploaded_file)
     h_row = 0
     for i, row in df_raw.head(15).iterrows():
@@ -82,6 +84,7 @@ if uploaded_file:
             break
     df = pd.read_excel(uploaded_file, header=h_row)
     
+    # Map essential columns
     c_map = {'sem': df.columns[5]}
     for c in df.columns:
         cs = str(c).strip()
@@ -93,9 +96,9 @@ if uploaded_file:
 
     threshold = st.number_input("Shortage Threshold (%)", 50, 100, 75)
     
-    if st.button("Generate Reports"):
+    if st.button("Generate Reports", use_container_width=True):
         output = io.BytesIO()
-        sheets_created = 0 # TRACKER TO PREVENT THE CRASH
+        sheets_created = 0 # TRACKER TO PREVENT INDEX ERROR
         
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df['Dept'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
@@ -107,19 +110,21 @@ if uploaded_file:
                 
                 for b in unique_batches:
                     b_parts = b.split()
-                    if "BCA" in b.upper() or "MCA" in b.upper():
+                    b_upper = b.upper()
+                    
+                    if "BCA" in b_upper or "MCA" in b_upper:
                         year = next((p for p in b_parts if p.isdigit()), "Series")
                         series_list.add(f"{b_parts[0].upper()} {year}")
-                    elif "MBA" in b.upper() or "MCOM" in b.upper():
-                        series_list.add(' '.join(b_parts[:3]))
+                    elif "MBA" in b_upper or "MCOM" in b_upper:
+                        series_list.add(' '.join(b_parts[:3])) # MBA BU 2025
                     else:
                         series_list.add(' '.join(b_parts[:2]))
                 
                 for series in sorted(list(series_list)):
                     s_parts = series.split()
-                    # Filtering rows based on the defined series
-                    s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(s_parts[0]) & 
-                                d_df[c_map['batch']].astype(str).str.contains(s_parts[-1])]
+                    # Filtering: Match Prefix (BCA/MCA/MBA) AND the Year/Specialization
+                    s_df = d_df[d_df[c_map['batch']].astype(str).str.contains(s_parts[0], case=False) & 
+                                d_df[c_map['batch']].astype(str).str.contains(s_parts[-1], case=False)]
                     
                     subs = sorted([s for s in s_df[c_map['subject']].unique() if is_valid_subject(s)])
                     
@@ -139,10 +144,9 @@ if uploaded_file:
                         get_bracket_summary(s_df, c_map, subs).to_excel(writer, sheet_name=sn_all, startrow=len(all_data)+2, index=False)
                         sheets_created += 1
             
-            # --- THE FIX ---
+            # CRITICAL FALLBACK: Prevents crash if no data matches naming logic
             if sheets_created == 0:
-                # If no data was found for the series naming logic, create a dummy sheet to avoid Index Error
-                pd.DataFrame({"Warning": ["No batches found matching the naming criteria (BCA/MCA/MBA BU/MCOM FA)."]}).to_excel(writer, sheet_name="No Data Matches")
+                pd.DataFrame({"Message": ["No matching batches found."]}).to_excel(writer, sheet_name="No Data Matches")
 
-        st.success("Report Ready!")
-        st.download_button("Download Excel", output.getvalue(), "VMS_Plain_Reports.xlsx")
+        st.success("Report Generated Successfully!")
+        st.download_button("📥 Download Excel Report", output.getvalue(), "VMS_Final_Reports.xlsx", use_container_width=True)
