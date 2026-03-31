@@ -20,14 +20,13 @@ uploaded_file = st.file_uploader("Upload Universal Attendance Excel", type=["xls
 
 if uploaded_file:
     try:
-        # Step 1: Read the entire raw sheet (no bounds)
+        # Read the raw sheet
         df_raw = pd.read_excel(uploaded_file, header=None)
         
         start_row = None
         start_col = None
         
-        # Step 2: Scan for "Roll No" (The Anchor)
-        # This scans every cell until it finds the header.
+        # Scan for the word "Roll No" in your Column B (or anywhere else)
         for r_idx, row in df_raw.iterrows():
             for c_idx, value in enumerate(row):
                 if str(value).strip().upper() == "ROLL NO":
@@ -37,71 +36,60 @@ if uploaded_file:
             if start_row is not None: break
                 
         if start_row is None:
-            st.error("❌ Could not find 'Roll No' in your Excel file.")
-            st.write("First 5 rows of your file:")
-            st.dataframe(df_raw.head(5))
+            st.error("❌ Could not find the header 'Roll No'. Please check your Excel file.")
         else:
-            # Step 3: Slice the data from the anchor point
-            # This ignores Column A and Rows 1-2 automatically.
+            # Crop the data to start exactly where the Roll No (e.g., 25CG001) starts
             df_sliced = df_raw.iloc[start_row:].copy()
-            df_sliced = df_sliced.iloc[:, start_col:] # Crop everything left of Roll No
+            df_sliced = df_sliced.iloc[:, start_col:] 
             
-            # Set the first row of the slice as headers
+            # Use the first row as the Header
             df_sliced.columns = df_sliced.iloc[0]
             df = df_sliced[1:].reset_index(drop=True)
             
-            # Clean Column Names
+            # Clean spaces from column names
             df.columns = [str(c).strip() for c in df.columns]
             
-            # Column mapping
+            # Map the exact columns you use
             COL_ROLL = "Roll No"
             COL_NAME = "Student Name"
             COL_BATCH = "Batch"
             COL_SUB = "Subject Name"
             COL_ATT = "Attended Hours with Approved Leave Percentage"
 
-            # Check if headers exist
-            if COL_ROLL not in df.columns:
-                st.error(f"Found anchor, but column '{COL_ROLL}' is missing. Check spelling.")
-            else:
-                # Force IDs (like 22MCA01) and Batches to be text
-                df[COL_ROLL] = df[COL_ROLL].astype(str).str.strip()
-                df[COL_BATCH] = df[COL_BATCH].astype(str).str.strip()
-                
-                st.success(f"✅ Data detected starting at Row {start_row + 1}, Column {start_col + 1}")
+            # --- THE FIX FOR 25CG001 ---
+            # This line ensures alpha-numeric IDs are NEVER treated as pure numbers
+            df[COL_ROLL] = df[COL_ROLL].astype(str).str.strip()
+            
+            st.success(f"✅ Table found! Example ID detected: {df[COL_ROLL].iloc[0]}")
 
-                if st.button("Generate Reports"):
-                    output = io.BytesIO()
-                    writer = pd.ExcelWriter(output, engine='openpyxl')
+            if st.button("Generate Reports"):
+                output = io.BytesIO()
+                writer = pd.ExcelWriter(output, engine='openpyxl')
+                
+                # Summary Page
+                pd.DataFrame({"Status": ["Processed Successfully"]}).to_excel(writer, sheet_name="Summary", index=False)
+                
+                # Grouping by Batch
+                for b in df[COL_BATCH].dropna().unique():
+                    b_df = df[df[COL_BATCH] == b].copy()
                     
-                    # Create Summary sheet (prevents IndexError)
-                    pd.DataFrame({"Status": ["Processing Complete"]}).to_excel(writer, sheet_name="Summary", index=False)
+                    # Convert attendance to numeric for calculation
+                    b_df[COL_ATT] = pd.to_numeric(b_df[COL_ATT], errors='coerce')
                     
-                    # Group by Batch
-                    batches = df[COL_BATCH].unique()
+                    # Create the Grid (Pivot)
+                    grid = b_df.pivot_table(
+                        index=[COL_ROLL, COL_NAME],
+                        columns=COL_SUB,
+                        values=COL_ATT,
+                        aggfunc='first' # Keeps the alpha-numeric ID exactly as it is
+                    ).reset_index()
                     
-                    for b in batches:
-                        if pd.isna(b) or str(b).lower() == 'nan': continue
-                        
-                        b_df = df[df[COL_BATCH] == b].copy()
-                        
-                        # Convert attendance to number
-                        b_df[COL_ATT] = pd.to_numeric(b_df[COL_ATT], errors='coerce')
-                        
-                        # Create the Pivot Grid (Alpha-Numeric proof)
-                        grid = b_df.pivot_table(
-                            index=[COL_ROLL, COL_NAME],
-                            columns=COL_SUB,
-                            values=COL_ATT,
-                            aggfunc='first'
-                        ).reset_index()
-                        
-                        # Clean sheet name for Excel
-                        sheet_name = str(b)[:30].replace("/", "-").replace("\\", "-")
-                        grid.to_excel(writer, sheet_name=sheet_name, index=False)
-                    
-                    writer.close()
-                    st.download_button("📥 Download Excel Report", output.getvalue(), "VMS_Final_Report.xlsx")
+                    # Save to Batch Sheet
+                    sn = str(b)[:30].replace("/", "-")
+                    grid.to_excel(writer, sheet_name=sn, index=False)
+                
+                writer.close()
+                st.download_button("📥 Download Final Report", output.getvalue(), "VMS_Final_Report.xlsx")
                 
     except Exception as e:
         st.error(f"Error: {e}")
