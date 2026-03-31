@@ -95,7 +95,7 @@ if uploaded_file:
     
     if st.button("Generate Reports"):
         output = io.BytesIO()
-        sheets_created = 0 # TRACKER TO PREVENT INDEXERROR
+        sheets_created = 0 # TRACKER TO PREVENT THE ERROR
         
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df['Dept'] = df[c_map['batch']].astype(str).apply(lambda x: x.split()[0].upper())
@@ -135,12 +135,12 @@ if uploaded_file:
                     if all_data is not None:
                         sn_all = f"{series} GEN ALL"[:31]
                         all_data.to_excel(writer, sheet_name=sn_all, index=False)
-                        get_bracket_summary(s_df, c_map, subs).to_excel(writer, sheet_name=sn_all, startrow=len(all_data)+2, index=False)
+                        get_bracket_summary(s_df, c_map, subs).to_excel(writer, sheet_name=sn_all, startrow=len(all_at if 'all_at' in locals() else all_data)+2, index=False)
                         sheets_created += 1
             
-            # CRITICAL FIX: If no sheets were created, add a placeholder to prevent the crash
+            # THE FIX: If no sheets were made, create a blank one so openpyxl doesn't crash
             if sheets_created == 0:
-                pd.DataFrame({"Message": ["No data matched the filtering criteria."]}).to_excel(writer, sheet_name="No Data Found")
+                pd.DataFrame({"Message": ["No data matched your filtering criteria."]}).to_excel(writer, sheet_name="No Data Found")
 
         st.success("Report Ready!")
         st.download_button("Download Excel", output.getvalue(), "VMS_Plain_Reports.xlsx")
